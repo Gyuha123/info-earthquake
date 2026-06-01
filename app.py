@@ -9,6 +9,14 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import seaborn as sns
 import platform
+import os
+
+# -----------------------------
+# Kaggle 인증 (Streamlit Secrets → 환경변수 주입)
+# -----------------------------
+if "kaggle" in st.secrets:
+    os.environ["KAGGLE_USERNAME"] = st.secrets["kaggle"]["username"]
+    os.environ["KAGGLE_KEY"]      = st.secrets["kaggle"]["key"]
 
 # -----------------------------
 # 한글 폰트 설정
@@ -55,18 +63,30 @@ def load_model():
 model, scaler = load_model()
 
 # -----------------------------
-# 데이터 로드 (예측용 500개 샘플)
+# 데이터 로드 (kagglehub으로 자동 다운로드)
 # -----------------------------
 @st.cache_data
 def load_data():
-    df = pd.read_csv("Eartquakes-1990-2023.csv")
+    csv_filename = "Eartquakes-1990-2023.csv"
+
+    # 로컬에 없으면 kagglehub으로 다운로드
+    if not os.path.exists(csv_filename):
+        with st.spinner("📥 데이터 다운로드 중... (최초 1회, 약 1분 소요)"):
+            import kagglehub
+            path = kagglehub.dataset_download(
+                "alessandrolobello/the-ultimate-earthquake-dataset-from-1990-2023"
+            )
+            csv_path = os.path.join(path, csv_filename)
+    else:
+        csv_path = csv_filename
+
+    df = pd.read_csv(csv_path)
     df['date'] = pd.to_datetime(df['date'], format='mixed')
     df_eq = df[df['data_type'] == 'earthquake'].copy()
     df_new = df_eq[df_eq['date'].dt.year >= 2022].copy()
     df_new = df_new[df_new['magnitudo'] >= 0.3].copy()
     df_sample = df_new.sample(500, random_state=42).copy()
 
-    # 컬럼명 한글화
     df_sample = df_sample.rename(columns={
         'tsunami': '쓰나미여부',
         'depth': '진원깊이',
@@ -75,7 +95,6 @@ def load_data():
         'latitude': '위도',
     })
 
-    # 군집 예측
     X = df_sample[["쓰나미여부", "진원깊이", "규모"]]
     X_scaled = scaler.transform(X)
     df_sample['cluster'] = model.predict(X_scaled)
@@ -84,9 +103,8 @@ def load_data():
 
 df_sample = load_data()
 
-# 군집 위험도 라벨 매핑 (학습 결과 기반)
-risk_dict = {0: '낮음', 1: '중간', 2: '높음'}
-color_dict = {0: 'blue', 1: 'green', 2: 'red'}
+risk_dict  = {0: '낮음', 1: '중간', 2: '높음'}
+color_dict = {0: 'blue',  1: 'green', 2: 'red'}
 df_sample['위험도'] = df_sample['cluster'].map(risk_dict)
 
 # -----------------------------
@@ -95,14 +113,14 @@ df_sample['위험도'] = df_sample['cluster'].map(risk_dict)
 st.sidebar.header("📍 위치 입력")
 st.sidebar.markdown("예측할 지점의 위도/경도를 입력하세요.")
 
-lat = st.sidebar.number_input("위도 (Latitude)", min_value=-90.0, max_value=90.0, value=35.6, step=0.1, format="%.4f")
+lat = st.sidebar.number_input("위도 (Latitude)",  min_value=-90.0,  max_value=90.0,  value=35.6,  step=0.1, format="%.4f")
 lon = st.sidebar.number_input("경도 (Longitude)", min_value=-180.0, max_value=180.0, value=139.7, step=0.1, format="%.4f")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**탐색 반경**: ±5도 이내 지진 데이터로 위험도 판정")
 
 # -----------------------------
-# 예측 로직 (주변 ±5도 군집 비율)
+# 예측 로직
 # -----------------------------
 near_df = df_sample[
     (df_sample['위도'] >= lat - 5) & (df_sample['위도'] <= lat + 5) &
@@ -121,9 +139,8 @@ if len(near_df) == 0:
     main_cluster = None
 else:
     cluster_ratio = near_df['cluster'].value_counts(normalize=True)
-    main_cluster = cluster_ratio.idxmax()
-    risk_label = risk_dict[main_cluster]
-    risk_color = color_dict[main_cluster]
+    main_cluster  = cluster_ratio.idxmax()
+    risk_label    = risk_dict[main_cluster]
 
     with col1:
         st.metric("주변 지진 데이터 수", f"{len(near_df)}건")
@@ -143,7 +160,7 @@ else:
     st.markdown("**주변 군집 비율**")
     ratio_df = cluster_ratio.reset_index()
     ratio_df.columns = ['군집', '비율']
-    ratio_df['위험도'] = ratio_df['군집'].map(risk_dict)
+    ratio_df['위험도']  = ratio_df['군집'].map(risk_dict)
     ratio_df['비율(%)'] = (ratio_df['비율'] * 100).round(1)
 
     fig_bar, ax_bar = plt.subplots(figsize=(5, 2.5))
